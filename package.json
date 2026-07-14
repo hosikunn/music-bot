@@ -9,9 +9,9 @@
     "deploy": "node deploy-commands.js"
   },
   "dependencies": {
-    "@discordjs/voice": "^0.18.0",
+    "@discordjs/voice": "^0.19.2",
     "@distube/ytdl-core": "^4.15.8",
-    "discord.js": "^14.16.3",
+    "discord.js": "^14.26.5",
     "dotenv": "^16.4.5",
     "ffmpeg-static": "^5.2.0",
     "libsodium-wrappers": "^0.7.15",
