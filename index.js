@@ -1,5 +1,7 @@
 require('dotenv').config();
 const fs = require('fs');
+const path = require('path');
+const { spawn, execFile } = require('child_process');
 const {
   Client,
   GatewayIntentBits,
@@ -14,47 +16,58 @@ const {
   entersState,
   StreamType,
 } = require('@discordjs/voice');
-const ytdl = require('@distube/ytdl-core');
 const { YouTube } = require('youtube-sr');
 
-// --- YouTubeのCookieを読み込む(bot対策の「ログイン確認」回避のため) ---
-// 優先順位: 1) 環境変数 YOUTUBE_COOKIES_BASE64(クラウド用)
-//          2) ローカルの cookies.txt ファイル(手元での動作確認用)
-function loadCookieHeader() {
-  try {
-    let rawText = null;
+// --- yt-dlp本体のパス(Windowsローカルなら bin/yt-dlp.exe、クラウドなら bin/yt-dlp) ---
+const YTDLP_PATH = path.join(
+  __dirname,
+  'bin',
+  process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp'
+);
+const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
 
-    if (process.env.YOUTUBE_COOKIES_BASE64) {
-      rawText = Buffer.from(process.env.YOUTUBE_COOKIES_BASE64, 'base64').toString('utf8');
-    } else if (fs.existsSync('./cookies.txt')) {
-      rawText = fs.readFileSync('./cookies.txt', 'utf8');
+// --- YouTubeのCookieを準備する ---
+// 環境変数 YOUTUBE_COOKIES_BASE64 があれば、それを cookies.txt として書き出す(クラウド用)
+// 無ければ、ローカルに置かれている cookies.txt をそのまま使う
+function prepareCookies() {
+  if (process.env.YOUTUBE_COOKIES_BASE64) {
+    try {
+      const decoded = Buffer.from(process.env.YOUTUBE_COOKIES_BASE64, 'base64').toString('utf8');
+      fs.writeFileSync(COOKIES_PATH, decoded, 'utf8');
+      console.log('✅ 環境変数からCookieファイルを書き出しました。');
+    } catch (err) {
+      console.error('Cookie書き出しエラー:', err);
     }
-
-    if (!rawText) return null;
-
-    // Netscape形式(cookies.txt)をパースして "name=value; name2=value2" の形に変換
-    const cookiePairs = rawText
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line && !line.startsWith('#'))
-      .map(line => line.split('\t'))
-      .filter(fields => fields.length >= 7)
-      .map(fields => `${fields[5]}=${fields[6]}`);
-
-    if (cookiePairs.length === 0) return null;
-
-    console.log(`✅ YouTube Cookie を読み込みました(${cookiePairs.length}件)`);
-    return cookiePairs.join('; ');
-  } catch (err) {
-    console.error('Cookie読み込みエラー:', err);
-    return null;
+  } else if (fs.existsSync(COOKIES_PATH)) {
+    console.log('✅ ローカルのcookies.txtを使用します。');
+  } else {
+    console.log('⚠️ Cookieが設定されていません(再生に失敗する場合があります)。');
   }
 }
+prepareCookies();
 
-const cookieHeader = loadCookieHeader();
-const ytdlRequestOptions = cookieHeader
-  ? { requestOptions: { headers: { cookie: cookieHeader } } }
-  : {};
+function hasCookies() {
+  return fs.existsSync(COOKIES_PATH);
+}
+
+// yt-dlpで動画の情報(タイトル・URL)を取得する
+function getVideoInfo(url) {
+  return new Promise((resolve, reject) => {
+    const args = ['--dump-single-json', '--no-warnings', '--no-playlist'];
+    if (hasCookies()) args.push('--cookies', COOKIES_PATH);
+    args.push(url);
+
+    execFile(YTDLP_PATH, args, { maxBuffer: 1024 * 1024 * 20 }, (error, stdout) => {
+      if (error) return reject(error);
+      try {
+        const info = JSON.parse(stdout);
+        resolve({ title: info.title, url: info.webpage_url || url });
+      } catch (err) {
+        reject(err);
+      }
+    });
+  });
+}
 
 const client = new Client({
   intents: [
@@ -65,7 +78,7 @@ const client = new Client({
 });
 
 // サーバー(guild)ごとの再生状態を保持するMap
-// { connection, player, queue: [{title, url, requestedBy}], playing, textChannel, currentSong }
+// { connection, player, queue: [{title, url, requestedBy}], playing, textChannel, currentSong, currentProcess }
 const guildQueues = new Map();
 
 function getQueue(guildId) {
@@ -77,6 +90,7 @@ function getQueue(guildId) {
       playing: false,
       textChannel: null,
       currentSong: null,
+      currentProcess: null,
     });
   }
   return guildQueues.get(guildId);
@@ -102,21 +116,36 @@ async function playNext(guildId) {
 
   const song = state.queue.shift();
   state.playing = true;
+  state.currentSong = song;
 
   try {
-    const stream = ytdl(song.url, {
-      filter: 'audioonly',
-      highWaterMark: 1 << 25,
-      ...ytdlRequestOptions,
+    const args = ['-f', 'bestaudio/best', '-o', '-', '--no-playlist', '--quiet', '--no-warnings'];
+    if (hasCookies()) args.push('--cookies', COOKIES_PATH);
+    args.push(song.url);
+
+    const ytdlpProcess = spawn(YTDLP_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    state.currentProcess = ytdlpProcess;
+
+    let stderrOutput = '';
+    ytdlpProcess.stderr.on('data', (chunk) => {
+      stderrOutput += chunk.toString();
     });
-    const resource = createAudioResource(stream, {
+    ytdlpProcess.on('error', (err) => {
+      console.error('yt-dlp起動エラー:', err);
+    });
+    ytdlpProcess.on('close', (code) => {
+      if (code !== 0 && code !== null) {
+        console.error(`yt-dlpが異常終了しました(code: ${code}): ${stderrOutput}`);
+      }
+    });
+
+    const resource = createAudioResource(ytdlpProcess.stdout, {
       inputType: StreamType.Arbitrary,
       inlineVolume: true,
     });
     resource.volume?.setVolume(0.5);
 
     state.player.play(resource);
-    state.currentSong = song;
 
     if (state.textChannel) {
       const embed = new EmbedBuilder()
@@ -163,10 +192,10 @@ client.on('interactionCreate', async (interaction) => {
 
       try {
         let songInfo;
+        const isUrl = /^https?:\/\//i.test(keyword);
 
-        if (ytdl.validateURL(keyword)) {
-          const info = await ytdl.getBasicInfo(keyword, ytdlRequestOptions);
-          songInfo = { title: info.videoDetails.title, url: info.videoDetails.video_url };
+        if (isUrl) {
+          songInfo = await getVideoInfo(keyword);
         } else {
           const results = await YouTube.search(keyword, { limit: 1, type: 'video' });
           if (!results || results.length === 0) {
@@ -242,6 +271,10 @@ client.on('interactionCreate', async (interaction) => {
       state.queue = [];
       state.playing = false;
       state.currentSong = null;
+      if (state.currentProcess) {
+        state.currentProcess.kill();
+        state.currentProcess = null;
+      }
       if (state.player) state.player.stop();
       if (state.connection) {
         state.connection.destroy();
