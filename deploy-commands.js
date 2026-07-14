@@ -35,6 +35,37 @@ const commands = [
   new SlashCommandBuilder()
     .setName('nowplaying')
     .setDescription('現在再生中の曲を表示します'),
+
+  new SlashCommandBuilder()
+    .setName('loop')
+    .setDescription('ループ再生の設定を変更します')
+    .addStringOption(option =>
+      option.setName('mode')
+        .setDescription('ループの種類')
+        .setRequired(true)
+        .addChoices(
+          { name: 'オフ', value: 'off' },
+          { name: '1曲ループ', value: 'track' },
+          { name: 'キュー全体ループ', value: 'queue' },
+        )),
+
+  new SlashCommandBuilder()
+    .setName('volume')
+    .setDescription('再生音量を変更します')
+    .addIntegerOption(option =>
+      option.setName('level')
+        .setDescription('音量(0〜200のパーセント、100が通常)')
+        .setRequired(true)
+        .setMinValue(0)
+        .setMaxValue(200)),
+
+  new SlashCommandBuilder()
+    .setName('shuffle')
+    .setDescription('現在のキューの曲順をシャッフルします'),
+
+  new SlashCommandBuilder()
+    .setName('back')
+    .setDescription('前に再生していた曲に戻ります'),
 ].map(command => command.toJSON());
 
 const rest = new REST().setToken(process.env.DISCORD_TOKEN);

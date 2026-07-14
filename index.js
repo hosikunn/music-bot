@@ -27,8 +27,6 @@ const YTDLP_PATH = path.join(
 const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
 
 // --- YouTubeのCookieを準備する ---
-// 環境変数 YOUTUBE_COOKIES_BASE64 があれば、それを cookies.txt として書き出す(クラウド用)
-// 無ければ、ローカルに置かれている cookies.txt をそのまま使う
 function prepareCookies() {
   if (process.env.YOUTUBE_COOKIES_BASE64) {
     try {
@@ -78,7 +76,6 @@ const client = new Client({
 });
 
 // サーバー(guild)ごとの再生状態を保持するMap
-// { connection, player, queue: [{title, url, requestedBy}], playing, textChannel, currentSong, currentProcess }
 const guildQueues = new Map();
 
 function getQueue(guildId) {
@@ -87,23 +84,49 @@ function getQueue(guildId) {
       connection: null,
       player: null,
       queue: [],
+      history: [],          // 再生済みの曲(/backで使う)
       playing: false,
       textChannel: null,
       currentSong: null,
       currentProcess: null,
+      currentResource: null,
+      volume: 0.5,           // 0.0〜2.0(200%まで)
+      loopMode: 'off',        // 'off' | 'track' | 'queue'
+      skipRequested: false,
     });
   }
   return guildQueues.get(guildId);
 }
 
-// 曲を1つ再生する(再生完了後は自動的に次の曲へ)
+// 曲の再生が終わった時の後処理(ループ・履歴の管理)をしてから次の曲へ
+function onSongFinished(guildId) {
+  const state = getQueue(guildId);
+  const forceAdvance = state.skipRequested;
+  state.skipRequested = false;
+
+  if (state.currentSong) {
+    if (!forceAdvance && state.loopMode === 'track') {
+      // 1曲ループ: 同じ曲をもう一度キューの先頭に
+      state.queue.unshift(state.currentSong);
+    } else {
+      state.history.push(state.currentSong);
+      if (state.history.length > 20) state.history.shift();
+      if (state.loopMode === 'queue') {
+        // キュー全体ループ: 再生し終えた曲を末尾に戻す
+        state.queue.push(state.currentSong);
+      }
+    }
+  }
+  playNext(guildId);
+}
+
+// 曲を1つ再生する
 async function playNext(guildId) {
   const state = getQueue(guildId);
 
   if (state.queue.length === 0) {
     state.playing = false;
     state.currentSong = null;
-    // キューが空になったら少し待ってから自動退出(すぐ次のplayが来る可能性があるため)
     setTimeout(() => {
       const s = getQueue(guildId);
       if (!s.playing && s.queue.length === 0 && s.connection) {
@@ -143,14 +166,16 @@ async function playNext(guildId) {
       inputType: StreamType.Arbitrary,
       inlineVolume: true,
     });
-    resource.volume?.setVolume(0.5);
+    resource.volume?.setVolume(state.volume);
+    state.currentResource = resource;
 
     state.player.play(resource);
 
     if (state.textChannel) {
+      const loopLabel = state.loopMode === 'track' ? ' 🔂' : state.loopMode === 'queue' ? ' 🔁' : '';
       const embed = new EmbedBuilder()
         .setColor(0x1db954)
-        .setTitle('🎵 再生中')
+        .setTitle(`🎵 再生中${loopLabel}`)
         .setDescription(`[${song.title}](${song.url})`)
         .setFooter({ text: `リクエスト: ${song.requestedBy}` });
       state.textChannel.send({ embeds: [embed] }).catch(() => {});
@@ -174,7 +199,6 @@ client.on('interactionCreate', async (interaction) => {
   const { commandName, guild, member } = interaction;
   const state = getQueue(guild.id);
 
-  // play以外は再生中のコネクションが必要
   if (commandName !== 'play' && !state.connection) {
     return interaction.reply({ content: '❌ 現在ボイスチャンネルに接続していません。', ephemeral: true });
   }
@@ -212,7 +236,6 @@ client.on('interactionCreate', async (interaction) => {
 
         state.textChannel = interaction.channel;
 
-        // ボイスチャンネルへの接続がまだなければ接続する
         if (!state.connection) {
           const connection = joinVoiceChannel({
             channelId: voiceChannel.id,
@@ -232,11 +255,11 @@ client.on('interactionCreate', async (interaction) => {
           connection.subscribe(player);
 
           player.on(AudioPlayerStatus.Idle, () => {
-            playNext(guild.id);
+            onSongFinished(guild.id);
           });
           player.on('error', (error) => {
             console.error('プレイヤーエラー:', error);
-            playNext(guild.id);
+            onSongFinished(guild.id);
           });
 
           state.connection = connection;
@@ -262,15 +285,18 @@ client.on('interactionCreate', async (interaction) => {
       if (!state.playing) {
         return interaction.reply({ content: '⚠️ 現在再生中の曲はありません。', ephemeral: true });
       }
-      state.player.stop(); // Idleイベントが発火し、自動的に次の曲が再生される
+      state.skipRequested = true;
+      state.player.stop();
       await interaction.reply('⏭️ 曲をスキップしました。');
       break;
     }
 
     case 'stop': {
       state.queue = [];
+      state.history = [];
       state.playing = false;
       state.currentSong = null;
+      state.loopMode = 'off';
       if (state.currentProcess) {
         state.currentProcess.kill();
         state.currentProcess = null;
@@ -304,10 +330,12 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply('📭 キューは空です。');
       }
       const lines = state.queue.map((s, i) => `${i + 1}. ${s.title} (${s.requestedBy})`);
+      const loopLabel = state.loopMode === 'track' ? '🔂 1曲ループ中' : state.loopMode === 'queue' ? '🔁 キューループ中' : null;
       const embed = new EmbedBuilder()
         .setColor(0x1db954)
         .setTitle('📜 再生キュー')
         .setDescription(
+          (loopLabel ? `${loopLabel}\n\n` : '') +
           (state.currentSong ? `**再生中:** ${state.currentSong.title}\n\n` : '') +
           (lines.length > 0 ? lines.join('\n') : '待機中の曲はありません。')
         );
@@ -320,6 +348,53 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply('📭 現在再生中の曲はありません。');
       }
       await interaction.reply(`🎵 現在再生中: **${state.currentSong.title}** (リクエスト: ${state.currentSong.requestedBy})`);
+      break;
+    }
+
+    case 'loop': {
+      const mode = interaction.options.getString('mode');
+      state.loopMode = mode;
+      const label = mode === 'track' ? '🔂 1曲ループ' : mode === 'queue' ? '🔁 キュー全体ループ' : '⏹️ ループ解除';
+      await interaction.reply(`${label} に設定しました。`);
+      break;
+    }
+
+    case 'volume': {
+      const percent = interaction.options.getInteger('level');
+      state.volume = percent / 100;
+      if (state.currentResource?.volume) {
+        state.currentResource.volume.setVolume(state.volume);
+      }
+      await interaction.reply(`🔊 音量を ${percent}% に設定しました。`);
+      break;
+    }
+
+    case 'shuffle': {
+      if (state.queue.length < 2) {
+        return interaction.reply({ content: '⚠️ シャッフルするには、キューに2曲以上必要です。', ephemeral: true });
+      }
+      // Fisher-Yatesシャッフル
+      for (let i = state.queue.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [state.queue[i], state.queue[j]] = [state.queue[j], state.queue[i]];
+      }
+      await interaction.reply(`🔀 キュー内の ${state.queue.length} 曲をシャッフルしました。`);
+      break;
+    }
+
+    case 'back': {
+      if (state.history.length === 0) {
+        return interaction.reply({ content: '⚠️ 戻れる前の曲がありません。', ephemeral: true });
+      }
+      const prevSong = state.history.pop();
+      if (state.currentSong) {
+        state.queue.unshift(state.currentSong);
+      }
+      state.queue.unshift(prevSong);
+      state.currentSong = null; // onSongFinishedで二重に履歴登録されないようにする
+      state.skipRequested = true;
+      if (state.player) state.player.stop();
+      await interaction.reply(`⏮️ 前の曲に戻ります: **${prevSong.title}**`);
       break;
     }
   }
