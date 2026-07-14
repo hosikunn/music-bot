@@ -1,9 +1,4 @@
-console.log('★★★ これは編集中のファイルです ★★★');
-console.log('DEBUG: env変数の一覧 =', Object.keys(process.env).filter(k => k.includes('DISCORD') || k.includes('CLIENT')));
 require('dotenv').config();
-console.log('DEBUG: DISCORD_TOKEN の長さ =', process.env.DISCORD_TOKEN ? process.env.DISCORD_TOKEN.length : '未設定(undefined)');
-console.log('DEBUG: DISCORD_TOKEN の最初の5文字 =', process.env.DISCORD_TOKEN ? process.env.DISCORD_TOKEN.slice(0, 5) : 'なし');
-console.log('DEBUG: CLIENT_ID =', process.env.CLIENT_ID);
 const {
   Client,
   GatewayIntentBits,
@@ -18,7 +13,8 @@ const {
   entersState,
   StreamType,
 } = require('@discordjs/voice');
-const play = require('play-dl');
+const ytdl = require('@distube/ytdl-core');
+const { YouTube } = require('youtube-sr');
 
 const client = new Client({
   intents: [
@@ -29,7 +25,7 @@ const client = new Client({
 });
 
 // サーバー(guild)ごとの再生状態を保持するMap
-// { connection, player, queue: [{title, url, requestedBy}], playing, voiceChannelId, textChannel }
+// { connection, player, queue: [{title, url, requestedBy}], playing, textChannel, currentSong }
 const guildQueues = new Map();
 
 function getQueue(guildId) {
@@ -40,6 +36,7 @@ function getQueue(guildId) {
       queue: [],
       playing: false,
       textChannel: null,
+      currentSong: null,
     });
   }
   return guildQueues.get(guildId);
@@ -51,6 +48,7 @@ async function playNext(guildId) {
 
   if (state.queue.length === 0) {
     state.playing = false;
+    state.currentSong = null;
     // キューが空になったら少し待ってから自動退出(すぐ次のplayが来る可能性があるため)
     setTimeout(() => {
       const s = getQueue(guildId);
@@ -66,9 +64,9 @@ async function playNext(guildId) {
   state.playing = true;
 
   try {
-    const stream = await play.stream(song.url);
-    const resource = createAudioResource(stream.stream, {
-      inputType: stream.type,
+    const stream = ytdl(song.url, { filter: 'audioonly', highWaterMark: 1 << 25 });
+    const resource = createAudioResource(stream, {
+      inputType: StreamType.Arbitrary,
       inlineVolume: true,
     });
     resource.volume?.setVolume(0.5);
@@ -122,11 +120,11 @@ client.on('interactionCreate', async (interaction) => {
       try {
         let songInfo;
 
-        if (play.yt_validate(keyword) === 'video') {
-          const info = await play.video_info(keyword);
-          songInfo = { title: info.video_details.title, url: info.video_details.url };
+        if (ytdl.validateURL(keyword)) {
+          const info = await ytdl.getBasicInfo(keyword);
+          songInfo = { title: info.videoDetails.title, url: info.videoDetails.video_url };
         } else {
-          const results = await play.search(keyword, { limit: 1, source: { youtube: 'video' } });
+          const results = await YouTube.search(keyword, { limit: 1, type: 'video' });
           if (!results || results.length === 0) {
             return interaction.editReply('❌ 該当する曲が見つかりませんでした。');
           }
@@ -147,10 +145,6 @@ client.on('interactionCreate', async (interaction) => {
             channelId: voiceChannel.id,
             guildId: guild.id,
             adapterCreator: guild.voiceAdapterCreator,
-            debug: true,
-          });
-          connection.on('debug', (message) => {
-            console.log('[VOICE DEBUG]', message);
           });
 
           try {
@@ -203,6 +197,7 @@ client.on('interactionCreate', async (interaction) => {
     case 'stop': {
       state.queue = [];
       state.playing = false;
+      state.currentSong = null;
       if (state.player) state.player.stop();
       if (state.connection) {
         state.connection.destroy();
