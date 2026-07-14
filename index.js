@@ -1,4 +1,5 @@
 require('dotenv').config();
+const fs = require('fs');
 const {
   Client,
   GatewayIntentBits,
@@ -15,6 +16,45 @@ const {
 } = require('@discordjs/voice');
 const ytdl = require('@distube/ytdl-core');
 const { YouTube } = require('youtube-sr');
+
+// --- YouTubeのCookieを読み込む(bot対策の「ログイン確認」回避のため) ---
+// 優先順位: 1) 環境変数 YOUTUBE_COOKIES_BASE64(クラウド用)
+//          2) ローカルの cookies.txt ファイル(手元での動作確認用)
+function loadCookieHeader() {
+  try {
+    let rawText = null;
+
+    if (process.env.YOUTUBE_COOKIES_BASE64) {
+      rawText = Buffer.from(process.env.YOUTUBE_COOKIES_BASE64, 'base64').toString('utf8');
+    } else if (fs.existsSync('./cookies.txt')) {
+      rawText = fs.readFileSync('./cookies.txt', 'utf8');
+    }
+
+    if (!rawText) return null;
+
+    // Netscape形式(cookies.txt)をパースして "name=value; name2=value2" の形に変換
+    const cookiePairs = rawText
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line && !line.startsWith('#'))
+      .map(line => line.split('\t'))
+      .filter(fields => fields.length >= 7)
+      .map(fields => `${fields[5]}=${fields[6]}`);
+
+    if (cookiePairs.length === 0) return null;
+
+    console.log(`✅ YouTube Cookie を読み込みました(${cookiePairs.length}件)`);
+    return cookiePairs.join('; ');
+  } catch (err) {
+    console.error('Cookie読み込みエラー:', err);
+    return null;
+  }
+}
+
+const cookieHeader = loadCookieHeader();
+const ytdlRequestOptions = cookieHeader
+  ? { requestOptions: { headers: { cookie: cookieHeader } } }
+  : {};
 
 const client = new Client({
   intents: [
@@ -64,7 +104,11 @@ async function playNext(guildId) {
   state.playing = true;
 
   try {
-    const stream = ytdl(song.url, { filter: 'audioonly', highWaterMark: 1 << 25 });
+    const stream = ytdl(song.url, {
+      filter: 'audioonly',
+      highWaterMark: 1 << 25,
+      ...ytdlRequestOptions,
+    });
     const resource = createAudioResource(stream, {
       inputType: StreamType.Arbitrary,
       inlineVolume: true,
@@ -121,7 +165,7 @@ client.on('interactionCreate', async (interaction) => {
         let songInfo;
 
         if (ytdl.validateURL(keyword)) {
-          const info = await ytdl.getBasicInfo(keyword);
+          const info = await ytdl.getBasicInfo(keyword, ytdlRequestOptions);
           songInfo = { title: info.videoDetails.title, url: info.videoDetails.video_url };
         } else {
           const results = await YouTube.search(keyword, { limit: 1, type: 'video' });
