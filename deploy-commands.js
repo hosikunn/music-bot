@@ -5,15 +5,16 @@ require('dotenv').config();
 
 const commands = [
   new SlashCommandBuilder()
+    .setName('omikuji')
+    .setDescription('今日の運勢を占います'),
+
+  new SlashCommandBuilder()
     .setName('play')
     .setDescription('YouTubeの曲を再生(またはキューに追加)します')
     .addStringOption(option =>
       option.setName('keyword')
         .setDescription('曲名 または YouTubeのURL')
         .setRequired(true)),
-  new SlashCommandBuilder()
-    .setName('omikuji')
-    .setDescription('今日の運勢を占います'),
 
   new SlashCommandBuilder()
     .setName('skip')
