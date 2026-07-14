@@ -1,4 +1,5 @@
 console.log('★★★ これは編集中のファイルです ★★★');
+console.log('DEBUG: env変数の一覧 =', Object.keys(process.env).filter(k => k.includes('DISCORD') || k.includes('CLIENT')));
 require('dotenv').config();
 console.log('DEBUG: DISCORD_TOKEN の長さ =', process.env.DISCORD_TOKEN ? process.env.DISCORD_TOKEN.length : '未設定(undefined)');
 console.log('DEBUG: DISCORD_TOKEN の最初の5文字 =', process.env.DISCORD_TOKEN ? process.env.DISCORD_TOKEN.slice(0, 5) : 'なし');
