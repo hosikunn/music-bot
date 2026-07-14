@@ -18,7 +18,6 @@ const {
 } = require('@discordjs/voice');
 const { YouTube } = require('youtube-sr');
 
-// --- yt-dlp本体のパス(Windowsローカルなら bin/yt-dlp.exe、クラウドなら bin/yt-dlp) ---
 const YTDLP_PATH = path.join(
   __dirname,
   'bin',
@@ -26,7 +25,6 @@ const YTDLP_PATH = path.join(
 );
 const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
 
-// --- YouTubeのCookieを準備する ---
 function prepareCookies() {
   if (process.env.YOUTUBE_COOKIES_BASE64) {
     try {
@@ -48,7 +46,6 @@ function hasCookies() {
   return fs.existsSync(COOKIES_PATH);
 }
 
-// yt-dlpで動画の情報(タイトル・URL)を取得する
 function getVideoInfo(url) {
   return new Promise((resolve, reject) => {
     const args = ['--dump-single-json', '--no-warnings', '--no-playlist'];
@@ -72,10 +69,10 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
   ],
 });
 
-// サーバー(guild)ごとの再生状態を保持するMap
 const guildQueues = new Map();
 
 function getQueue(guildId) {
@@ -84,21 +81,20 @@ function getQueue(guildId) {
       connection: null,
       player: null,
       queue: [],
-      history: [],          // 再生済みの曲(/backで使う)
+      history: [],
       playing: false,
       textChannel: null,
       currentSong: null,
       currentProcess: null,
       currentResource: null,
-      volume: 0.5,           // 0.0〜2.0(200%まで)
-      loopMode: 'off',        // 'off' | 'track' | 'queue'
+      volume: 0.5,
+      loopMode: 'off',
       skipRequested: false,
     });
   }
   return guildQueues.get(guildId);
 }
 
-// 曲の再生が終わった時の後処理(ループ・履歴の管理)をしてから次の曲へ
 function onSongFinished(guildId) {
   const state = getQueue(guildId);
   const forceAdvance = state.skipRequested;
@@ -106,13 +102,11 @@ function onSongFinished(guildId) {
 
   if (state.currentSong) {
     if (!forceAdvance && state.loopMode === 'track') {
-      // 1曲ループ: 同じ曲をもう一度キューの先頭に
       state.queue.unshift(state.currentSong);
     } else {
       state.history.push(state.currentSong);
       if (state.history.length > 20) state.history.shift();
       if (state.loopMode === 'queue') {
-        // キュー全体ループ: 再生し終えた曲を末尾に戻す
         state.queue.push(state.currentSong);
       }
     }
@@ -120,7 +114,6 @@ function onSongFinished(guildId) {
   playNext(guildId);
 }
 
-// 曲を1つ再生する
 async function playNext(guildId) {
   const state = getQueue(guildId);
 
@@ -189,14 +182,100 @@ async function playNext(guildId) {
   }
 }
 
+// ==================== お遊び機能 ====================
+
+const OMIKUJI_RESULTS = [
+  { label: '大吉', weight: 8,  comments: ['最高の1日になりそう!', '何をやってもうまくいく予感。', '思い切って挑戦してみて。'] },
+  { label: '中吉', weight: 15, comments: ['良いことがありそうです。', '穏やかな1日になりそう。', 'ちょっとした幸運に恵まれるかも。'] },
+  { label: '小吉', weight: 20, comments: ['まずまずの運勢です。', '無理せずマイペースに。', '小さな喜びを見つけられそう。'] },
+  { label: '吉',   weight: 25, comments: ['平穏な1日を過ごせそう。', '普段通りが一番です。', '油断せず過ごしましょう。'] },
+  { label: '末吉',  weight: 18, comments: ['これから運気が上向きに。', '焦らずじっくりいきましょう。', '後半にツキが回ってきそう。'] },
+  { label: '凶',   weight: 10, comments: ['慎重に行動しましょう。', '無理は禁物です。', '今日は静かに過ごすのが吉。'] },
+  { label: '大凶',  weight: 4,  comments: ['今日は思い切って休むのも手。', '油断大敵、慎重に。', '明日はきっと良くなります。'] },
+];
+
+function drawOmikuji() {
+  const totalWeight = OMIKUJI_RESULTS.reduce((sum, r) => sum + r.weight, 0);
+  let rand = Math.random() * totalWeight;
+  for (const result of OMIKUJI_RESULTS) {
+    rand -= result.weight;
+    if (rand <= 0) {
+      const comment = result.comments[Math.floor(Math.random() * result.comments.length)];
+      return { label: result.label, comment };
+    }
+  }
+  return { label: '吉', comment: '穏やかな1日を。' };
+}
+
+const REACTION_RULES = [
+  {
+    trigger: /(おはよう|おは)/,
+    replies: ['おはようございます!今日も良い1日を☀️', 'おはよう〜。しっかり寝れた?'],
+  },
+  {
+    trigger: /(こんにちは|こんちは)/,
+    replies: ['こんにちは!', 'やっほー、こんにちは😊'],
+  },
+  {
+    trigger: /(こんばんは|こんばんわ)/,
+    replies: ['こんばんは!今日もお疲れさまでした。', 'こんばんは〜、夜更かしはほどほどにね🌙'],
+  },
+  {
+    trigger: /(疲れた|つかれた)/,
+    replies: ['お疲れさまです…!ゆっくり休んでくださいね。', 'よく頑張りました。無理しないでね。'],
+  },
+  {
+    trigger: /(眠い|ねむい)/,
+    replies: ['眠い時は無理せず休むのが一番です💤', 'あくびが出そう…早めに寝るのもアリかも。'],
+  },
+  {
+    trigger: /(ありがとう|thx|thanks)/i,
+    replies: ['どういたしまして!', 'いえいえ、こちらこそ〜'],
+  },
+];
+
+const REACTION_COOLDOWN_MS = 15_000;
+const lastReactionTime = new Map();
+
+// ==================== ここまで ====================
+
 client.once('ready', () => {
   console.log(`✅ ログインしました: ${client.user.tag}`);
+});
+
+client.on('messageCreate', (message) => {
+  if (message.author.bot) return;
+
+  const now = Date.now();
+  const lastTime = lastReactionTime.get(message.channelId) || 0;
+  if (now - lastTime < REACTION_COOLDOWN_MS) return;
+
+  for (const rule of REACTION_RULES) {
+    if (rule.trigger.test(message.content)) {
+      const reply = rule.replies[Math.floor(Math.random() * rule.replies.length)];
+      message.channel.send(reply).catch(() => {});
+      lastReactionTime.set(message.channelId, now);
+      break;
+    }
+  }
 });
 
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName, guild, member } = interaction;
+
+  if (commandName === 'omikuji') {
+    const result = drawOmikuji();
+    const embed = new EmbedBuilder()
+      .setColor(0xffb703)
+      .setTitle('🎋 今日のおみくじ')
+      .setDescription(`**${result.label}**\n\n${result.comment}`)
+      .setFooter({ text: `${interaction.user.username} さんの運勢` });
+    await interaction.reply({ embeds: [embed] });
+    return;
+  }
+
   const state = getQueue(guild.id);
 
   if (commandName !== 'play' && !state.connection) {
@@ -373,7 +452,6 @@ client.on('interactionCreate', async (interaction) => {
       if (state.queue.length < 2) {
         return interaction.reply({ content: '⚠️ シャッフルするには、キューに2曲以上必要です。', ephemeral: true });
       }
-      // Fisher-Yatesシャッフル
       for (let i = state.queue.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [state.queue[i], state.queue[j]] = [state.queue[j], state.queue[i]];
@@ -391,7 +469,7 @@ client.on('interactionCreate', async (interaction) => {
         state.queue.unshift(state.currentSong);
       }
       state.queue.unshift(prevSong);
-      state.currentSong = null; // onSongFinishedで二重に履歴登録されないようにする
+      state.currentSong = null;
       state.skipRequested = true;
       if (state.player) state.player.stop();
       await interaction.reply(`⏮️ 前の曲に戻ります: **${prevSong.title}**`);
