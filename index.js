@@ -336,6 +336,12 @@ const lastReactionTime = new Map();
 
 // ==================== ここまで ====================
 
+// 予期しない通信エラー(例: 同じBotを複数箇所で同時に動かした際の衝突など)で
+// プロセスごと落ちてしまわないようにする保険
+client.on('error', (err) => {
+  console.error('⚠️ Discordクライアントでエラーが発生しました(継続します):', err);
+});
+
 client.once('ready', () => {
   console.log(`✅ ログインしました: ${client.user.tag}`);
 });
