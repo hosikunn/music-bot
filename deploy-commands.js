@@ -1,7 +1,7 @@
 // スラッシュコマンドをDiscordに登録するためのスクリプト
 // 初回、またはコマンド内容を変更した時に `npm run deploy` で実行してください
 require('dotenv').config();
-
+const { REST, Routes, SlashCommandBuilder } = require('discord.js');
 
 const commands = [
   new SlashCommandBuilder()

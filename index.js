@@ -18,6 +18,7 @@ const {
 } = require('@discordjs/voice');
 const { YouTube } = require('youtube-sr');
 
+// --- yt-dlp本体のパス(Windowsローカルなら bin/yt-dlp.exe、クラウドなら bin/yt-dlp) ---
 const YTDLP_PATH = path.join(
   __dirname,
   'bin',
@@ -25,6 +26,10 @@ const YTDLP_PATH = path.join(
 );
 const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
 
+// YouTube側のブロック回避のため、TV/iOSクライアントとして振る舞う
+const YTDLP_EXTRACTOR_ARGS = ['--extractor-args', 'youtube:player_client=tv,ios'];
+
+// --- YouTubeのCookieを準備する ---
 function prepareCookies() {
   if (process.env.YOUTUBE_COOKIES_BASE64) {
     try {
@@ -46,9 +51,10 @@ function hasCookies() {
   return fs.existsSync(COOKIES_PATH);
 }
 
+// yt-dlpで動画の情報(タイトル・URL)を取得する
 function getVideoInfo(url) {
   return new Promise((resolve, reject) => {
-    const args = ['--dump-single-json', '--no-warnings', '--no-playlist'];
+    const args = ['--dump-single-json', '--no-warnings', '--no-playlist', ...YTDLP_EXTRACTOR_ARGS];
     if (hasCookies()) args.push('--cookies', COOKIES_PATH);
     args.push(url);
 
@@ -73,6 +79,7 @@ const client = new Client({
   ],
 });
 
+// サーバー(guild)ごとの再生状態を保持するMap
 const guildQueues = new Map();
 
 function getQueue(guildId) {
@@ -135,7 +142,7 @@ async function playNext(guildId) {
   state.currentSong = song;
 
   try {
-    const args = ['-f', 'bestaudio/best', '-o', '-', '--no-playlist', '--quiet', '--no-warnings'];
+    const args = ['-f', 'bestaudio/best', '-o', '-', '--no-playlist', '--quiet', '--no-warnings', ...YTDLP_EXTRACTOR_ARGS];
     if (hasCookies()) args.push('--cookies', COOKIES_PATH);
     args.push(song.url);
 
