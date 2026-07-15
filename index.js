@@ -274,6 +274,7 @@ async function playNext(guildId) {
 // ==================== お遊び機能 ====================
 
 const OMIKUJI_RESULTS = [
+  { label: '鬼大吉', weight: 0.00000001, comments: ['……嘘だろ、伝説級の強運。今日という日を一生忘れないでください。'] },
   { label: '大吉', weight: 8,  comments: ['最高の1日になりそう!', '何をやってもうまくいく予感。', '思い切って挑戦してみて。'] },
   { label: '中吉', weight: 15, comments: ['良いことがありそうです。', '穏やかな1日になりそう。', 'ちょっとした幸運に恵まれるかも。'] },
   { label: '小吉', weight: 20, comments: ['まずまずの運勢です。', '無理せずマイペースに。', '小さな喜びを見つけられそう。'] },
@@ -294,6 +295,33 @@ function drawOmikuji() {
     }
   }
   return { label: '吉', comment: '穏やかな1日を。' };
+}
+
+// 「日付」の区切りを日本時間の午前5時にするための日付キーを作る
+// (午前5時より前は、まだ「前日」として扱われる)
+function getOmikujiDayKey() {
+  const now = new Date();
+  const jstMs = now.getTime() + 9 * 60 * 60 * 1000; // UTC→JSTの時刻に変換
+  const shiftedMs = jstMs - 5 * 60 * 60 * 1000;      // 午前5時区切りにするため5時間戻す
+  const shifted = new Date(shiftedMs);
+  const y = shifted.getUTCFullYear();
+  const m = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(shifted.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+// ユーザーごとに、その日(午前5時区切り)の結果を固定して返す
+const omikujiHistory = new Map(); // userId -> { dayKey, result }
+
+function drawOmikujiForUser(userId) {
+  const dayKey = getOmikujiDayKey();
+  const cached = omikujiHistory.get(userId);
+  if (cached && cached.dayKey === dayKey) {
+    return { result: cached.result, alreadyDrawn: true };
+  }
+  const result = drawOmikuji();
+  omikujiHistory.set(userId, { dayKey, result });
+  return { result, alreadyDrawn: false };
 }
 
 const REACTION_RULES = [
