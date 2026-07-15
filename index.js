@@ -95,6 +95,30 @@ async function findWorkingClient(url) {
   return null;
 }
 
+// 起動時にyt-dlp本体を最新版へ自己更新する(ビルド時点のバージョンが古いままになるのを防ぐ)
+async function ensureYtdlpUpToDate() {
+  try {
+    const version = await execYtdlp(['--version']);
+    console.log(`yt-dlp 現在のバージョン: ${version.trim()}`);
+  } catch (err) {
+    console.error('yt-dlpバージョン確認エラー:', err);
+  }
+
+  try {
+    const updateResult = await execYtdlp(['-U']);
+    console.log('yt-dlp 自己更新結果:', updateResult.trim());
+  } catch (err) {
+    console.log('yt-dlp 自己更新チェック(エラーでも動作には影響しない場合があります):', err.message);
+  }
+
+  try {
+    const versionAfter = await execYtdlp(['--version']);
+    console.log(`yt-dlp 更新後のバージョン: ${versionAfter.trim()}`);
+  } catch (err) {
+    // 無視
+  }
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -532,4 +556,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+(async () => {
+  await ensureYtdlpUpToDate();
+  client.login(process.env.DISCORD_TOKEN);
+})();
