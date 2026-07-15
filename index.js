@@ -137,6 +137,12 @@ async function playNext(guildId) {
     return;
   }
 
+  // 前の曲のyt-dlpプロセスが残っていれば、ここで確実に終了させる
+  if (state.currentProcess) {
+    state.currentProcess.kill('SIGTERM');
+    state.currentProcess = null;
+  }
+
   const song = state.queue.shift();
   state.playing = true;
   state.currentSong = song;
@@ -156,7 +162,9 @@ async function playNext(guildId) {
     ytdlpProcess.on('error', (err) => {
       console.error('yt-dlp起動エラー:', err);
     });
-    ytdlpProcess.on('close', (code) => {
+    ytdlpProcess.on('close', (code, signal) => {
+      // スキップ等で意図的に終了させた場合(SIGTERM)は正常な後始末なのでログしない
+      if (signal === 'SIGTERM') return;
       if (code !== 0 && code !== null) {
         console.error(`yt-dlpが異常終了しました(code: ${code}): ${stderrOutput}`);
       }
@@ -372,6 +380,10 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: '⚠️ 現在再生中の曲はありません。', ephemeral: true });
       }
       state.skipRequested = true;
+      if (state.currentProcess) {
+        state.currentProcess.kill('SIGTERM');
+        state.currentProcess = null;
+      }
       state.player.stop();
       await interaction.reply('⏭️ 曲をスキップしました。');
       break;
@@ -478,6 +490,10 @@ client.on('interactionCreate', async (interaction) => {
       state.queue.unshift(prevSong);
       state.currentSong = null;
       state.skipRequested = true;
+      if (state.currentProcess) {
+        state.currentProcess.kill('SIGTERM');
+        state.currentProcess = null;
+      }
       if (state.player) state.player.stop();
       await interaction.reply(`⏮️ 前の曲に戻ります: **${prevSong.title}**`);
       break;
