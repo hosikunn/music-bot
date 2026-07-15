@@ -27,7 +27,7 @@ const YTDLP_PATH = path.join(
 const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
 
 // YouTube側のブロック回避のため、TV/iOSクライアントとして振る舞う
-const YTDLP_EXTRACTOR_ARGS = ['--extractor-args', 'youtube:player_client=tv,ios'];
+const YTDLP_EXTRACTOR_ARGS = ['--extractor-args', 'youtube:player_client=android,web,tv'];
 
 // --- YouTubeのCookieを準備する ---
 function prepareCookies() {
