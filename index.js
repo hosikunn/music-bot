@@ -363,12 +363,17 @@ client.on('interactionCreate', async (interaction) => {
   const { commandName, guild, member } = interaction;
 
   if (commandName === 'omikuji') {
-    const result = drawOmikuji();
+    const { result, alreadyDrawn } = drawOmikujiForUser(interaction.user.id);
+    const isOniDaikichi = result.label === '鬼大吉';
     const embed = new EmbedBuilder()
-      .setColor(0xffb703)
-      .setTitle('🎋 今日のおみくじ')
+      .setColor(isOniDaikichi ? 0xff0055 : 0xffb703)
+      .setTitle(isOniDaikichi ? '💥 鬼大吉 出現!!' : '🎋 今日のおみくじ')
       .setDescription(`**${result.label}**\n\n${result.comment}`)
-      .setFooter({ text: `${interaction.user.username} さんの運勢` });
+      .setFooter({
+        text: alreadyDrawn
+          ? `${interaction.user.username} さんの本日の運勢(引き直しはできません・午前5時更新)`
+          : `${interaction.user.username} さんの運勢(午前5時に更新されます)`,
+      });
     await interaction.reply({ embeds: [embed] });
     return;
   }
