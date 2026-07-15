@@ -48,9 +48,17 @@ function hasCookies() {
   return fs.existsSync(COOKIES_PATH);
 }
 
-// YouTube側のブロック回避のため、複数のクライアントを順番に試す
-// (どれか1つがうまくいけばそれを使う。日によって効くものが変わることがあるため)
-const CLIENT_COMBOS = ['tv,ios', 'android,web,tv', 'web_safari,web', 'mweb,web', 'web'];
+// YouTube側のブロック回避のため、複数のクライアント・Cookie有無の組み合わせを順番に試す
+// (どれか1つがうまくいけばそれを使う。日によって・Cookie有無によって効くものが変わるため)
+const CLIENT_COMBOS = [
+  { client: 'tv,ios', useCookies: false },
+  { client: 'tv,ios', useCookies: true },
+  { client: 'android,web,tv', useCookies: false },
+  { client: 'android,web,tv', useCookies: true },
+  { client: 'web_safari,web', useCookies: true },
+  { client: 'mweb,web', useCookies: true },
+  { client: 'web', useCookies: true },
+];
 
 function execYtdlp(args) {
   return new Promise((resolve, reject) => {
@@ -65,14 +73,16 @@ function execYtdlp(args) {
 async function getVideoInfo(url) {
   let lastError = null;
   for (const combo of CLIENT_COMBOS) {
-    const args = ['--dump-single-json', '--no-warnings', '--no-playlist', '--extractor-args', `youtube:player_client=${combo}`];
-    if (hasCookies()) args.push('--cookies', COOKIES_PATH);
+    const args = ['--dump-single-json', '--no-warnings', '--no-playlist', '--extractor-args', `youtube:player_client=${combo.client}`];
+    if (combo.useCookies && hasCookies()) args.push('--cookies', COOKIES_PATH);
     args.push(url);
     try {
       const stdout = await execYtdlp(args);
       const info = JSON.parse(stdout);
+      console.log(`✅ 取得成功: client=${combo.client} cookies=${combo.useCookies}`);
       return { title: info.title, url: info.webpage_url || url, playerClient: combo };
     } catch (err) {
+      console.log(`⚠️ 取得失敗(client=${combo.client}, cookies=${combo.useCookies}): ${err.message.split('\n').slice(0, 3).join(' / ')}`);
       lastError = err;
     }
   }
@@ -82,14 +92,15 @@ async function getVideoInfo(url) {
 // (曲名検索など、すでにURLとタイトルは分かっている場合に)有効なクライアントだけを特定する
 async function findWorkingClient(url) {
   for (const combo of CLIENT_COMBOS) {
-    const args = ['-f', 'bestaudio/best', '--simulate', '--quiet', '--no-warnings', '--extractor-args', `youtube:player_client=${combo}`];
-    if (hasCookies()) args.push('--cookies', COOKIES_PATH);
+    const args = ['-f', 'bestaudio/best', '--simulate', '--quiet', '--no-warnings', '--extractor-args', `youtube:player_client=${combo.client}`];
+    if (combo.useCookies && hasCookies()) args.push('--cookies', COOKIES_PATH);
     args.push(url);
     try {
       await execYtdlp(args);
+      console.log(`✅ 再生確認OK: client=${combo.client} cookies=${combo.useCookies}`);
       return combo;
     } catch (err) {
-      // このクライアントでは失敗、次を試す
+      console.log(`⚠️ 再生確認NG(client=${combo.client}, cookies=${combo.useCookies}): ${err.message.split('\n').slice(0, 3).join(' / ')}`);
     }
   }
   return null;
@@ -117,6 +128,19 @@ async function ensureYtdlpUpToDate() {
   } catch (err) {
     // 無視
   }
+}
+
+// 一定時間ごとに自動でyt-dlpの更新チェックを行う(起動しっぱなしでも古くなりにくくする)
+const YTDLP_UPDATE_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12時間ごと
+
+function scheduleYtdlpUpdates() {
+  setInterval(() => {
+    console.log('⏰ 定期チェック: yt-dlpの更新を確認します...');
+    ensureYtdlpUpToDate().catch((err) => {
+      console.error('定期更新チェックでエラーが発生しました:', err);
+    });
+  }, YTDLP_UPDATE_INTERVAL_MS);
+  console.log(`✅ yt-dlpの自動更新チェックを${YTDLP_UPDATE_INTERVAL_MS / 1000 / 60 / 60}時間ごとに実行するよう設定しました。`);
 }
 
 const client = new Client({
@@ -198,8 +222,8 @@ async function playNext(guildId) {
 
   try {
     const clientCombo = song.playerClient || CLIENT_COMBOS[0];
-    const args = ['-f', 'bestaudio/best', '-o', '-', '--no-playlist', '--quiet', '--no-warnings', '--extractor-args', `youtube:player_client=${clientCombo}`];
-    if (hasCookies()) args.push('--cookies', COOKIES_PATH);
+    const args = ['-f', 'bestaudio/best', '-o', '-', '--no-playlist', '--quiet', '--no-warnings', '--extractor-args', `youtube:player_client=${clientCombo.client}`];
+    if (clientCombo.useCookies && hasCookies()) args.push('--cookies', COOKIES_PATH);
     args.push(song.url);
 
     const ytdlpProcess = spawn(YTDLP_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -558,5 +582,6 @@ client.on('interactionCreate', async (interaction) => {
 
 (async () => {
   await ensureYtdlpUpToDate();
+  scheduleYtdlpUpdates();
   client.login(process.env.DISCORD_TOKEN);
 })();
