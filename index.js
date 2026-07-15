@@ -26,9 +26,6 @@ const YTDLP_PATH = path.join(
 );
 const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
 
-// YouTube側のブロック回避のため、TV/iOSクライアントとして振る舞う
-const YTDLP_EXTRACTOR_ARGS = ['--extractor-args', 'youtube:player_client=android,web,tv'];
-
 // --- YouTubeのCookieを準備する ---
 function prepareCookies() {
   if (process.env.YOUTUBE_COOKIES_BASE64) {
@@ -51,23 +48,51 @@ function hasCookies() {
   return fs.existsSync(COOKIES_PATH);
 }
 
-// yt-dlpで動画の情報(タイトル・URL)を取得する
-function getVideoInfo(url) {
-  return new Promise((resolve, reject) => {
-    const args = ['--dump-single-json', '--no-warnings', '--no-playlist', ...YTDLP_EXTRACTOR_ARGS];
-    if (hasCookies()) args.push('--cookies', COOKIES_PATH);
-    args.push(url);
+// YouTube側のブロック回避のため、複数のクライアントを順番に試す
+// (どれか1つがうまくいけばそれを使う。日によって効くものが変わることがあるため)
+const CLIENT_COMBOS = ['tv,ios', 'android,web,tv', 'web_safari,web', 'mweb,web', 'web'];
 
+function execYtdlp(args) {
+  return new Promise((resolve, reject) => {
     execFile(YTDLP_PATH, args, { maxBuffer: 1024 * 1024 * 20 }, (error, stdout) => {
       if (error) return reject(error);
-      try {
-        const info = JSON.parse(stdout);
-        resolve({ title: info.title, url: info.webpage_url || url });
-      } catch (err) {
-        reject(err);
-      }
+      resolve(stdout);
     });
   });
+}
+
+// 動画の情報(タイトル・URL)を取得しつつ、有効なクライアントの組み合わせも特定する
+async function getVideoInfo(url) {
+  let lastError = null;
+  for (const combo of CLIENT_COMBOS) {
+    const args = ['--dump-single-json', '--no-warnings', '--no-playlist', '--extractor-args', `youtube:player_client=${combo}`];
+    if (hasCookies()) args.push('--cookies', COOKIES_PATH);
+    args.push(url);
+    try {
+      const stdout = await execYtdlp(args);
+      const info = JSON.parse(stdout);
+      return { title: info.title, url: info.webpage_url || url, playerClient: combo };
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error('全てのクライアントで取得に失敗しました');
+}
+
+// (曲名検索など、すでにURLとタイトルは分かっている場合に)有効なクライアントだけを特定する
+async function findWorkingClient(url) {
+  for (const combo of CLIENT_COMBOS) {
+    const args = ['-f', 'bestaudio/best', '--simulate', '--quiet', '--no-warnings', '--extractor-args', `youtube:player_client=${combo}`];
+    if (hasCookies()) args.push('--cookies', COOKIES_PATH);
+    args.push(url);
+    try {
+      await execYtdlp(args);
+      return combo;
+    } catch (err) {
+      // このクライアントでは失敗、次を試す
+    }
+  }
+  return null;
 }
 
 const client = new Client({
@@ -148,7 +173,8 @@ async function playNext(guildId) {
   state.currentSong = song;
 
   try {
-    const args = ['-f', 'bestaudio/best', '-o', '-', '--no-playlist', '--quiet', '--no-warnings', ...YTDLP_EXTRACTOR_ARGS];
+    const clientCombo = song.playerClient || CLIENT_COMBOS[0];
+    const args = ['-f', 'bestaudio/best', '-o', '-', '--no-playlist', '--quiet', '--no-warnings', '--extractor-args', `youtube:player_client=${clientCombo}`];
     if (hasCookies()) args.push('--cookies', COOKIES_PATH);
     args.push(song.url);
 
@@ -319,12 +345,17 @@ client.on('interactionCreate', async (interaction) => {
           if (!results || results.length === 0) {
             return interaction.editReply('❌ 該当する曲が見つかりませんでした。');
           }
-          songInfo = { title: results[0].title, url: results[0].url };
+          const workingClient = await findWorkingClient(results[0].url);
+          if (!workingClient) {
+            return interaction.editReply('❌ 現在YouTube側の制限により再生できません。少し時間をおいて再度試してください。');
+          }
+          songInfo = { title: results[0].title, url: results[0].url, playerClient: workingClient };
         }
 
         const song = {
           title: songInfo.title,
           url: songInfo.url,
+          playerClient: songInfo.playerClient,
           requestedBy: interaction.user.tag,
         };
 
@@ -370,7 +401,7 @@ client.on('interactionCreate', async (interaction) => {
         }
       } catch (err) {
         console.error('playコマンドエラー:', err);
-        await interaction.editReply('❌ 曲の取得中にエラーが発生しました。URLや曲名を確認してください。');
+        await interaction.editReply('❌ 現在YouTube側の制限により取得できませんでした。少し時間をおくか、別の曲・URLで試してください。');
       }
       break;
     }
