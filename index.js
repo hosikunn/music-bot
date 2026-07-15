@@ -299,11 +299,11 @@ function drawOmikuji() {
 const REACTION_RULES = [
   {
     trigger: /(うお|どわー|きちー|おお|冷笑|ったく|どした？|必死|冗談ですやん|く、くる|そういうノリ|クカ|ガチイク)/,
-    replies: ['冷笑を検出'],
+    replies: ['冷笑を検知'],
   },
 ];
 
-const REACTION_COOLDOWN_MS = 15_000;
+const REACTION_COOLDOWN_MS = 5_000;
 const lastReactionTime = new Map();
 
 // ==================== ここまで ====================
